@@ -312,6 +312,13 @@ async def _process_upload(client, status_msg, user_id: int, sermon: dict):
             await status_msg.edit_text(f"❌ Download failed: {type(exc).__name__}: {exc}")
             return
 
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            await status_msg.edit_text("❌ Download produced an empty file. Try sending as a File (not photo).")
+            return
+
+        downloaded_size = os.path.getsize(tmp_path)
+        logger.info("Downloaded %s → %s (%s)", file_name, tmp_path, format_size(downloaded_size))
+
         await status_msg.edit_text("⬆️ Uploading to Google Drive…")
         try:
             folder_id = drive.get_or_create_folder(sermon["date"], sermon["title"])
