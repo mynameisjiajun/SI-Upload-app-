@@ -6,12 +6,17 @@ from datetime import datetime
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 ROOT_FOLDER_NAME = "SI Archive"
+
+
+class DriveUploadError(RuntimeError):
+    pass
 
 
 class DriveService:
@@ -93,32 +98,37 @@ class DriveService:
 
         RESUMABLE_THRESHOLD = 5 * 1024 * 1024  # 5 MB
 
-        if file_size < RESUMABLE_THRESHOLD:
-            # Simple upload — best for small files
-            media = MediaFileUpload(local_path, mimetype=mime_type, resumable=False)
-            response = self._svc.files().create(
-                body=metadata,
-                media_body=media,
-                fields="id,webViewLink",
-            ).execute()
-        else:
-            # Resumable chunked upload — required for large files
-            media = MediaFileUpload(
-                local_path,
-                mimetype=mime_type,
-                resumable=True,
-                chunksize=8 * 1024 * 1024,
-            )
-            request = self._svc.files().create(
-                body=metadata,
-                media_body=media,
-                fields="id,webViewLink",
-            )
-            response = None
-            while response is None:
-                status, response = request.next_chunk()
-                if status:
-                    logger.info("Drive upload %.0f%%", status.progress() * 100)
+        try:
+            if file_size < RESUMABLE_THRESHOLD:
+                # Simple upload — best for small files
+                media = MediaFileUpload(local_path, mimetype=mime_type, resumable=False)
+                response = self._svc.files().create(
+                    body=metadata,
+                    media_body=media,
+                    fields="id,webViewLink",
+                ).execute()
+            else:
+                # Resumable chunked upload — required for large files
+                media = MediaFileUpload(
+                    local_path,
+                    mimetype=mime_type,
+                    resumable=True,
+                    chunksize=8 * 1024 * 1024,
+                )
+                request = self._svc.files().create(
+                    body=metadata,
+                    media_body=media,
+                    fields="id,webViewLink",
+                )
+                response = None
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        logger.info("Drive upload %.0f%%", status.progress() * 100)
+
+        except HttpError as e:
+            reason = e.reason if hasattr(e, "reason") else str(e)
+            raise DriveUploadError(f"HTTP {e.resp.status} — {reason}") from e
 
         file_id: str = response["id"]
         web_link: str = response.get(
