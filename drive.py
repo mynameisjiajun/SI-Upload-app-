@@ -4,7 +4,8 @@ import mimetypes
 import os
 from datetime import datetime
 
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
@@ -21,9 +22,16 @@ class DriveUploadError(RuntimeError):
 
 class DriveService:
     def __init__(self):
-        raw = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-        info = json.loads(raw)
-        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        creds = Credentials(
+            token=None,
+            refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+            client_id=os.environ["GOOGLE_CLIENT_ID"],
+            client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=SCOPES,
+        )
+        # Force a token refresh so we fail fast on bad credentials
+        creds.refresh(Request())
         self._svc = build("drive", "v3", credentials=creds, cache_discovery=False)
         self._root_id: str | None = None
 
@@ -55,8 +63,6 @@ class DriveService:
         if self._root_id:
             return self._root_id
 
-        # Prefer an explicit folder ID from env so the bot writes into a
-        # specific shared folder rather than the service-account's Drive root.
         env_id = os.getenv("DRIVE_ROOT_FOLDER_ID", "").strip()
         if env_id:
             self._root_id = env_id
@@ -66,15 +72,10 @@ class DriveService:
         return self._root_id
 
     def get_or_create_folder(self, date_str: str, sermon_title: str) -> str:
-        """
-        Returns the Drive folder ID for:
-          SI Archive / 2026 / May / 24 May - Grace In Suffering
-        Creates any missing folders along the way.
-        """
         dt = datetime.strptime(date_str, "%Y-%m-%d")
-        year_name = dt.strftime("%Y")                         # "2026"
-        month_name = dt.strftime("%B")                        # "May"
-        day_name = f"{dt.strftime('%d %b')} - {sermon_title}"  # "24 May - Grace In Suffering"
+        year_name = dt.strftime("%Y")
+        month_name = dt.strftime("%B")
+        day_name = f"{dt.strftime('%d %b')} - {sermon_title}"
 
         root = self._root_folder_id()
         year_id = self._find_or_create_folder(year_name, root)
@@ -85,11 +86,6 @@ class DriveService:
     # ── Upload ────────────────────────────────────────────────────────────────
 
     def upload_file(self, local_path: str, drive_filename: str, folder_id: str) -> tuple[str, str]:
-        """
-        Uploads local_path to Google Drive.
-        Uses simple upload for files under 5 MB, resumable chunked upload for larger files.
-        Returns (file_id, web_view_link).
-        """
         mime_type, _ = mimetypes.guess_type(local_path)
         mime_type = mime_type or "application/octet-stream"
 
@@ -100,7 +96,6 @@ class DriveService:
 
         try:
             if file_size < RESUMABLE_THRESHOLD:
-                # Simple upload — best for small files
                 media = MediaFileUpload(local_path, mimetype=mime_type, resumable=False)
                 response = self._svc.files().create(
                     body=metadata,
@@ -108,7 +103,6 @@ class DriveService:
                     fields="id,webViewLink",
                 ).execute()
             else:
-                # Resumable chunked upload — required for large files
                 media = MediaFileUpload(
                     local_path,
                     mimetype=mime_type,
@@ -134,5 +128,5 @@ class DriveService:
         web_link: str = response.get(
             "webViewLink", f"https://drive.google.com/file/d/{file_id}/view"
         )
-        logger.info("Uploaded '%s' (%s) → %s", drive_filename, file_size, web_link)
+        logger.info("Uploaded '%s' (%s bytes) → %s", drive_filename, file_size, web_link)
         return file_id, web_link
