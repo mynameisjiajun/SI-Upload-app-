@@ -81,35 +81,48 @@ class DriveService:
 
     def upload_file(self, local_path: str, drive_filename: str, folder_id: str) -> tuple[str, str]:
         """
-        Uploads local_path to Google Drive using a resumable chunked upload.
+        Uploads local_path to Google Drive.
+        Uses simple upload for files under 5 MB, resumable chunked upload for larger files.
         Returns (file_id, web_view_link).
         """
         mime_type, _ = mimetypes.guess_type(local_path)
         mime_type = mime_type or "application/octet-stream"
 
+        file_size = os.path.getsize(local_path)
         metadata = {"name": drive_filename, "parents": [folder_id]}
-        media = MediaFileUpload(
-            local_path,
-            mimetype=mime_type,
-            resumable=True,
-            chunksize=8 * 1024 * 1024,  # 8 MB chunks
-        )
 
-        request = self._svc.files().create(
-            body=metadata,
-            media_body=media,
-            fields="id,webViewLink",
-        )
+        RESUMABLE_THRESHOLD = 5 * 1024 * 1024  # 5 MB
 
-        response = None
-        while response is None:
-            status, response = request.next_chunk()
-            if status:
-                logger.info("Drive upload %.0f%%", status.progress() * 100)
+        if file_size < RESUMABLE_THRESHOLD:
+            # Simple upload — best for small files
+            media = MediaFileUpload(local_path, mimetype=mime_type, resumable=False)
+            response = self._svc.files().create(
+                body=metadata,
+                media_body=media,
+                fields="id,webViewLink",
+            ).execute()
+        else:
+            # Resumable chunked upload — required for large files
+            media = MediaFileUpload(
+                local_path,
+                mimetype=mime_type,
+                resumable=True,
+                chunksize=8 * 1024 * 1024,
+            )
+            request = self._svc.files().create(
+                body=metadata,
+                media_body=media,
+                fields="id,webViewLink",
+            )
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    logger.info("Drive upload %.0f%%", status.progress() * 100)
 
         file_id: str = response["id"]
         web_link: str = response.get(
             "webViewLink", f"https://drive.google.com/file/d/{file_id}/view"
         )
-        logger.info("Uploaded '%s' → %s", drive_filename, web_link)
+        logger.info("Uploaded '%s' (%s) → %s", drive_filename, file_size, web_link)
         return file_id, web_link
