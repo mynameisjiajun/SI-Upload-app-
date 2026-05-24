@@ -305,11 +305,21 @@ async def _process_upload(client, status_msg, user_id: int, sermon: dict):
 
     try:
         await status_msg.edit_text(f"⬇️ Downloading… 0%  (0 B / {format_size(file_size)})")
-        await original_msg.download(file_name=tmp_path, progress=progress)
+        try:
+            await original_msg.download(file_name=tmp_path, progress=progress)
+        except Exception as exc:
+            logger.exception("Download failed")
+            await status_msg.edit_text(f"❌ Download failed: {type(exc).__name__}: {exc}")
+            return
 
         await status_msg.edit_text("⬆️ Uploading to Google Drive…")
-        folder_id = drive.get_or_create_folder(sermon["date"], sermon["title"])
-        _, web_link = drive.upload_file(tmp_path, new_name, folder_id)
+        try:
+            folder_id = drive.get_or_create_folder(sermon["date"], sermon["title"])
+            _, web_link = drive.upload_file(tmp_path, new_name, folder_id)
+        except Exception as exc:
+            logger.exception("Drive upload failed")
+            await status_msg.edit_text(f"❌ Drive upload failed: {type(exc).__name__}: {exc}")
+            return
 
         try:
             os.remove(tmp_path)
@@ -323,13 +333,11 @@ async def _process_upload(client, status_msg, user_id: int, sermon: dict):
             f"🔗 [View in Google Drive]({web_link})"
         )
 
-    except Exception as exc:
-        logger.exception("Upload failed")
+    finally:
         try:
             os.remove(tmp_path)
         except OSError:
             pass
-        await status_msg.edit_text(f"❌ Upload failed: {exc}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
